@@ -1,3 +1,4 @@
+# -*- coding:utf-8 -*-
 #
 # Copyright (C) 2016 The Android Open Source Project
 #
@@ -20,7 +21,12 @@ import select
 import shutil
 import stat
 
-from Queue import Queue
+from pyversion import is_python3
+if is_python3():
+  from queue import Queue
+else:
+  from Queue import Queue
+
 from threading import Thread
 
 
@@ -74,7 +80,7 @@ class FileDescriptorStreams(object):
     """
     raise NotImplementedError
 
-  def _create_stream(fd, dest, std_name):
+  def _create_stream(self, fd, dest, std_name):
     """ Creates a new stream wrapping an existing file descriptor.
     """
     raise NotImplementedError
@@ -84,8 +90,14 @@ class _FileDescriptorStreamsNonBlocking(FileDescriptorStreams):
   """ Implementation of FileDescriptorStreams for platforms that support
   non blocking I/O.
   """
+  def __init__(self):
+    super(_FileDescriptorStreamsNonBlocking, self).__init__()
+    self._poll = select.poll()
+    self._fd_to_stream = {}
+
   class Stream(object):
     """ Encapsulates a file descriptor """
+
     def __init__(self, fd, dest, std_name):
       self.fd = fd
       self.dest = dest
@@ -107,11 +119,18 @@ class _FileDescriptorStreamsNonBlocking(FileDescriptorStreams):
       self.fd.close()
 
   def _create_stream(self, fd, dest, std_name):
-    return self.Stream(fd, dest, std_name)
+    stream = self.Stream(fd, dest, std_name)
+    self._fd_to_stream[stream.fileno()] = stream
+    self._poll.register(stream, select.POLLIN)
+    return stream
+
+  def remove(self, stream):
+    self._poll.unregister(stream)
+    del self._fd_to_stream[stream.fileno()]
+    super(_FileDescriptorStreamsNonBlocking, self).remove(stream)
 
   def select(self):
-    ready_streams, _, _ = select.select(self.streams, [], [])
-    return ready_streams
+    return [self._fd_to_stream[fd] for fd, _ in self._poll.poll()]
 
 
 class _FileDescriptorStreamsThreads(FileDescriptorStreams):
@@ -119,6 +138,7 @@ class _FileDescriptorStreamsThreads(FileDescriptorStreams):
   non blocking I/O. This implementation requires creating threads issuing
   blocking read operations on file descriptors.
   """
+
   def __init__(self):
     super(_FileDescriptorStreamsThreads, self).__init__()
     # The queue is shared accross all threads so we can simulate the
@@ -138,12 +158,14 @@ class _FileDescriptorStreamsThreads(FileDescriptorStreams):
 
   class QueueItem(object):
     """ Item put in the shared queue """
+
     def __init__(self, stream, data):
       self.stream = stream
       self.data = data
 
   class Stream(object):
     """ Encapsulates a file descriptor """
+
     def __init__(self, fd, dest, std_name, queue):
       self.fd = fd
       self.dest = dest
@@ -169,7 +191,7 @@ class _FileDescriptorStreamsThreads(FileDescriptorStreams):
       for line in iter(self.fd.readline, b''):
         self.queue.put(_FileDescriptorStreamsThreads.QueueItem(self, line))
       self.fd.close()
-      self.queue.put(_FileDescriptorStreamsThreads.QueueItem(self, None))
+      self.queue.put(_FileDescriptorStreamsThreads.QueueItem(self, b''))
 
 
 def symlink(source, link_name):
@@ -182,10 +204,10 @@ def symlink(source, link_name):
     source = _validate_winpath(source)
     link_name = _validate_winpath(link_name)
     target = os.path.join(os.path.dirname(link_name), source)
-    if os.path.isdir(target):
-      platform_utils_win32.create_dirsymlink(source, link_name)
+    if isdir(target):
+      platform_utils_win32.create_dirsymlink(_makelongpath(source), link_name)
     else:
-      platform_utils_win32.create_filesymlink(source, link_name)
+      platform_utils_win32.create_filesymlink(_makelongpath(source), link_name)
   else:
     return os.symlink(source, link_name)
 
@@ -215,11 +237,35 @@ def _winpath_is_valid(path):
     return not drive  # "x:" is invalid
 
 
-def rmtree(path):
+def _makelongpath(path):
+  """Return the input path normalized to support the Windows long path syntax
+  ("\\\\?\\" prefix) if needed, i.e. if the input path is longer than the
+  MAX_PATH limit.
+  """
   if isWindows():
-    shutil.rmtree(path, onerror=handle_rmtree_error)
+    # Note: MAX_PATH is 260, but, for directories, the maximum value is actually 246.
+    if len(path) < 246:
+      return path
+    if path.startswith(u"\\\\?\\"):
+      return path
+    if not os.path.isabs(path):
+      return path
+    # Append prefix and ensure unicode so that the special longpath syntax
+    # is supported by underlying Win32 API calls
+    return u"\\\\?\\" + os.path.normpath(path)
   else:
-    shutil.rmtree(path)
+    return path
+
+
+def rmtree(path, ignore_errors=False):
+  """shutil.rmtree(path) wrapper with support for long paths on Windows.
+
+  Availability: Unix, Windows."""
+  onerror = None
+  if isWindows():
+    path = _makelongpath(path)
+    onerror = handle_rmtree_error
+  shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
 
 
 def handle_rmtree_error(function, path, excinfo):
@@ -229,15 +275,18 @@ def handle_rmtree_error(function, path, excinfo):
 
 
 def rename(src, dst):
+  """os.rename(src, dst) wrapper with support for long paths on Windows.
+
+  Availability: Unix, Windows."""
   if isWindows():
     # On Windows, rename fails if destination exists, see
     # https://docs.python.org/2/library/os.html#os.rename
     try:
-      os.rename(src, dst)
+      os.rename(_makelongpath(src), _makelongpath(dst))
     except OSError as e:
       if e.errno == errno.EEXIST:
-        os.remove(dst)
-        os.rename(src, dst)
+        os.remove(_makelongpath(dst))
+        os.rename(_makelongpath(src), _makelongpath(dst))
       else:
         raise
   else:
@@ -245,30 +294,98 @@ def rename(src, dst):
 
 
 def remove(path):
-  """Remove (delete) the file path. This is a replacement for os.remove, but
-  allows deleting read-only files on Windows.
-  """
+  """Remove (delete) the file path. This is a replacement for os.remove that
+  allows deleting read-only files on Windows, with support for long paths and
+  for deleting directory symbolic links.
+
+  Availability: Unix, Windows."""
   if isWindows():
+    longpath = _makelongpath(path)
     try:
-      os.remove(path)
+      os.remove(longpath)
     except OSError as e:
       if e.errno == errno.EACCES:
-        os.chmod(path, stat.S_IWRITE)
-        os.remove(path)
+        os.chmod(longpath, stat.S_IWRITE)
+        # Directory symbolic links must be deleted with 'rmdir'.
+        if islink(longpath) and isdir(longpath):
+          os.rmdir(longpath)
+        else:
+          os.remove(longpath)
       else:
         raise
   else:
     os.remove(path)
 
 
+def walk(top, topdown=True, onerror=None, followlinks=False):
+  """os.walk(path) wrapper with support for long paths on Windows.
+
+  Availability: Windows, Unix.
+  """
+  if isWindows():
+    return _walk_windows_impl(top, topdown, onerror, followlinks)
+  else:
+    return os.walk(top, topdown, onerror, followlinks)
+
+
+def _walk_windows_impl(top, topdown, onerror, followlinks):
+  try:
+    names = listdir(top)
+  except Exception as err:
+    if onerror is not None:
+      onerror(err)
+    return
+
+  dirs, nondirs = [], []
+  for name in names:
+    if isdir(os.path.join(top, name)):
+      dirs.append(name)
+    else:
+      nondirs.append(name)
+
+  if topdown:
+    yield top, dirs, nondirs
+  for name in dirs:
+    new_path = os.path.join(top, name)
+    if followlinks or not islink(new_path):
+      for x in _walk_windows_impl(new_path, topdown, onerror, followlinks):
+        yield x
+  if not topdown:
+    yield top, dirs, nondirs
+
+
+def listdir(path):
+  """os.listdir(path) wrapper with support for long paths on Windows.
+
+  Availability: Windows, Unix.
+  """
+  return os.listdir(_makelongpath(path))
+
+
+def rmdir(path):
+  """os.rmdir(path) wrapper with support for long paths on Windows.
+
+  Availability: Windows, Unix.
+  """
+  os.rmdir(_makelongpath(path))
+
+
+def isdir(path):
+  """os.path.isdir(path) wrapper with support for long paths on Windows.
+
+  Availability: Windows, Unix.
+  """
+  return os.path.isdir(_makelongpath(path))
+
+
 def islink(path):
-  """Test whether a path is a symbolic link.
+  """os.path.islink(path) wrapper with support for long paths on Windows.
 
   Availability: Windows, Unix.
   """
   if isWindows():
     import platform_utils_win32
-    return platform_utils_win32.islink(path)
+    return platform_utils_win32.islink(_makelongpath(path))
   else:
     return os.path.islink(path)
 
@@ -283,7 +400,7 @@ def readlink(path):
   """
   if isWindows():
     import platform_utils_win32
-    return platform_utils_win32.readlink(path)
+    return platform_utils_win32.readlink(_makelongpath(path))
   else:
     return os.readlink(path)
 

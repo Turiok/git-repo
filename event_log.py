@@ -1,3 +1,4 @@
+# -*- coding:utf-8 -*-
 #
 # Copyright (C) 2017 The Android Open Source Project
 #
@@ -21,6 +22,7 @@ import multiprocessing
 TASK_COMMAND = 'command'
 TASK_SYNC_NETWORK = 'sync-network'
 TASK_SYNC_LOCAL = 'sync-local'
+
 
 class EventLog(object):
   """Event log that records events that occurred during a repo invocation.
@@ -51,7 +53,6 @@ class EventLog(object):
   def __init__(self):
     """Initializes the event log."""
     self._log = []
-    self._next_id = _EventIdGenerator()
     self._parent = None
 
   def Add(self, name, task_name, start, finish=None, success=None,
@@ -71,7 +72,7 @@ class EventLog(object):
       A dictionary of the event added to the log.
     """
     event = {
-        'id': (kind, self._next_id.next()),
+        'id': (kind, _NextEventId()),
         'name': name,
         'task_name': task_name,
         'start_time': start,
@@ -101,7 +102,7 @@ class EventLog(object):
     Returns:
       A dictionary of the event added to the log.
     """
-    event = self.Add(project.relpath, success, start, finish, task_name)
+    event = self.Add(project.relpath, task_name, start, finish, success)
     if event is not None:
       event['project'] = project.name
       if project.revisionExpr:
@@ -138,7 +139,7 @@ class EventLog(object):
     Returns:
       A dictionary of the event added to the log.
     """
-    event['status'] =  self.GetStatusString(success)
+    event['status'] = self.GetStatusString(success)
     event['finish_time'] = finish
     return event
 
@@ -162,16 +163,17 @@ class EventLog(object):
         f.write('\n')
 
 
-def _EventIdGenerator():
-  """Returns multi-process safe iterator that generates locally unique id.
+# An integer id that is unique across this invocation of the program.
+_EVENT_ID = multiprocessing.Value('i', 1)
 
-  Yields:
+
+def _NextEventId():
+  """Helper function for grabbing the next unique id.
+
+  Returns:
     A unique, to this invocation of the program, integer id.
   """
-  eid = multiprocessing.Value('i', 1)
-
-  while True:
-    with eid.get_lock():
-      val = eid.value
-      eid.value += 1
-    yield val
+  with _EVENT_ID.get_lock():
+    val = _EVENT_ID.value
+    _EVENT_ID.value += 1
+  return val

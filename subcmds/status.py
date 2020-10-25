@@ -1,3 +1,4 @@
+# -*- coding:utf-8 -*-
 #
 # Copyright (C) 2008 The Android Open Source Project
 #
@@ -13,6 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
+
+import glob
+import itertools
+import os
+
 from command import PagedCommand
 
 try:
@@ -20,12 +27,9 @@ try:
 except ImportError:
   import dummy_threading as _threading
 
-import glob
-
-import itertools
-import os
-
 from color import Coloring
+import platform_utils
+
 
 class Status(PagedCommand):
   common = True
@@ -49,8 +53,7 @@ includes deeper items.  For example, if dir/subdir/proj1 and
 dir/subdir/proj2 are repo projects, dir/subdir/proj3 will be shown
 if it is not known to repo.
 
-Status Display
---------------
+# Status Display
 
 The status display is organized into three columns of information,
 for example if the file 'subcmds/status.py' is modified in the
@@ -116,15 +119,15 @@ the following meanings:
     """find 'dirs' that are present in 'proj_dirs_parents' but not in 'proj_dirs'"""
     status_header = ' --\t'
     for item in dirs:
-      if not os.path.isdir(item):
+      if not platform_utils.isdir(item):
         outstring.append(''.join([status_header, item]))
         continue
       if item in proj_dirs:
         continue
       if item in proj_dirs_parents:
         self._FindOrphans(glob.glob('%s/.*' % item) +
-            glob.glob('%s/*' % item),
-            proj_dirs, proj_dirs_parents, outstring)
+                          glob.glob('%s/*' % item),
+                          proj_dirs, proj_dirs_parents, outstring)
         continue
       outstring.append(''.join([status_header, item, '/']))
 
@@ -167,8 +170,8 @@ the following meanings:
       class StatusColoring(Coloring):
         def __init__(self, config):
           Coloring.__init__(self, config, 'status')
-          self.project = self.printer('header', attr = 'bold')
-          self.untracked = self.printer('untracked', fg = 'red')
+          self.project = self.printer('header', attr='bold')
+          self.untracked = self.printer('untracked', fg='red')
 
       orig_path = os.getcwd()
       try:
@@ -176,8 +179,8 @@ the following meanings:
 
         outstring = []
         self._FindOrphans(glob.glob('.*') +
-            glob.glob('*'),
-            proj_dirs, proj_dirs_parents, outstring)
+                          glob.glob('*'),
+                          proj_dirs, proj_dirs_parents, outstring)
 
         if outstring:
           output = StatusColoring(self.manifest.globalConfig)

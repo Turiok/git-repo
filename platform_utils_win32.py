@@ -1,3 +1,4 @@
+# -*- coding:utf-8 -*-
 #
 # Copyright (C) 2016 The Android Open Source Project
 #
@@ -15,15 +16,21 @@
 
 import errno
 
+from pyversion import is_python3
 from ctypes import WinDLL, get_last_error, FormatError, WinError, addressof
 from ctypes import c_buffer
-from ctypes.wintypes import BOOL, LPCWSTR, DWORD, HANDLE, POINTER, c_ubyte
-from ctypes.wintypes import WCHAR, USHORT, LPVOID, Structure, Union, ULONG
-from ctypes.wintypes import byref
+from ctypes.wintypes import BOOL, BOOLEAN, LPCWSTR, DWORD, HANDLE
+from ctypes.wintypes import WCHAR, USHORT, LPVOID, ULONG
+if is_python3():
+  from ctypes import c_ubyte, Structure, Union, byref
+  from ctypes.wintypes import LPDWORD
+else:
+  # For legacy Python2 different imports are needed.
+  from ctypes.wintypes import POINTER, c_ubyte, Structure, Union, byref
+  LPDWORD = POINTER(DWORD)
 
 kernel32 = WinDLL('kernel32', use_last_error=True)
 
-LPDWORD = POINTER(DWORD)
 UCHAR = c_ubyte
 
 # Win32 error codes
@@ -33,7 +40,7 @@ ERROR_PRIVILEGE_NOT_HELD = 1314
 
 # Win32 API entry points
 CreateSymbolicLinkW = kernel32.CreateSymbolicLinkW
-CreateSymbolicLinkW.restype = BOOL
+CreateSymbolicLinkW.restype = BOOLEAN
 CreateSymbolicLinkW.argtypes = (LPCWSTR,  # lpSymlinkFileName In
                                 LPCWSTR,  # lpTargetFileName In
                                 DWORD)    # dwFlags In
@@ -41,6 +48,8 @@ CreateSymbolicLinkW.argtypes = (LPCWSTR,  # lpSymlinkFileName In
 # Symbolic link creation flags
 SYMBOLIC_LINK_FLAG_FILE = 0x00
 SYMBOLIC_LINK_FLAG_DIRECTORY = 0x01
+# symlink support for CreateSymbolicLink() starting with Windows 10 (1703, v10.0.14972)
+SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE = 0x02
 
 GetFileAttributesW = kernel32.GetFileAttributesW
 GetFileAttributesW.restype = DWORD
@@ -143,19 +152,19 @@ def create_dirsymlink(source, link_name):
 
 
 def _create_symlink(source, link_name, dwFlags):
-  # Note: Win32 documentation for CreateSymbolicLink is incorrect.
-  # On success, the function returns "1".
-  # On error, the function returns some random value (e.g. 1280).
-  # The best bet seems to use "GetLastError" and check for error/success.
-  CreateSymbolicLinkW(link_name, source, dwFlags)
-  code = get_last_error()
-  if code != ERROR_SUCCESS:
-    error_desc = FormatError(code).strip()
-    if code == ERROR_PRIVILEGE_NOT_HELD:
-      raise OSError(errno.EPERM, error_desc, link_name)
-    _raise_winerror(
-        code,
-        'Error creating symbolic link \"%s\"'.format(link_name))
+  if not CreateSymbolicLinkW(link_name, source,
+                             dwFlags | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE):
+    # See https://github.com/golang/go/pull/24307/files#diff-b87bc12e4da2497308f9ef746086e4f0
+    # "the unprivileged create flag is unsupported below Windows 10 (1703, v10.0.14972).
+    # retry without it."
+    if not CreateSymbolicLinkW(link_name, source, dwFlags):
+      code = get_last_error()
+      error_desc = FormatError(code).strip()
+      if code == ERROR_PRIVILEGE_NOT_HELD:
+        raise OSError(errno.EPERM, error_desc, link_name)
+      _raise_winerror(
+          code,
+          'Error creating symbolic link \"%s\"'.format(link_name))
 
 
 def islink(path):
@@ -177,7 +186,7 @@ def readlink(path):
   if reparse_point_handle == INVALID_HANDLE_VALUE:
     _raise_winerror(
         get_last_error(),
-        'Error opening symblic link \"%s\"'.format(path))
+        'Error opening symbolic link \"%s\"'.format(path))
   target_buffer = c_buffer(MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
   n_bytes_returned = DWORD()
   io_result = DeviceIoControl(reparse_point_handle,
@@ -192,7 +201,7 @@ def readlink(path):
   if not io_result:
     _raise_winerror(
         get_last_error(),
-        'Error reading symblic link \"%s\"'.format(path))
+        'Error reading symbolic link \"%s\"'.format(path))
   rdb = REPARSE_DATA_BUFFER.from_buffer(target_buffer)
   if rdb.ReparseTag == IO_REPARSE_TAG_SYMLINK:
     return _preserve_encoding(path, rdb.SymbolicLinkReparseBuffer.PrintName)
@@ -201,13 +210,17 @@ def readlink(path):
   # Unsupported reparse point type
   _raise_winerror(
       ERROR_NOT_SUPPORTED,
-      'Error reading symblic link \"%s\"'.format(path))
+      'Error reading symbolic link \"%s\"'.format(path))
 
 
 def _preserve_encoding(source, target):
   """Ensures target is the same string type (i.e. unicode or str) as source."""
-  if isinstance(source, unicode):
-    return unicode(target)
+
+  if is_python3():
+    return target
+
+  if isinstance(source, unicode):  # noqa: F821
+    return unicode(target)  # noqa: F821
   return str(target)
 
 
