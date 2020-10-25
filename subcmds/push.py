@@ -71,7 +71,9 @@ absolute path to the project's local directory. If no projects are specified,
                  type='string', action='store', dest='dest_branch',
                  metavar='BRANCH',
                  help='Push to this target branch on the remote.')
-
+    p.add_option('-n', '--dry-run',
+                 dest='dryrun', default=False, action='store_true',
+                 help='Do everything except actually push the CL.')
     # Options relating to upload hook.  Note that verify and no-verify are NOT
     # opposites of each other, which is why they store to different locations.
     # We are using them to match 'git commit' syntax.

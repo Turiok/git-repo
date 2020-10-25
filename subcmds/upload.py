@@ -503,6 +503,7 @@ Gerrit Code Review:  https://www.gerritcodereview.com/
                                  push_options=opt.push_options)
         else:
           branch.Push(dest_branch=destination,
+                      dryrun=opt.dryrun,
                       validate_certs=opt.validate_certs)
 
         branch.uploaded = True

@@ -1444,6 +1444,7 @@ class Project(object):
 
   def Push(self, branch=None,
                  dest_branch=None,
+                 dryrun=False,
                  validate_certs=True):
     """Pushes the named branch to origin.
     """
@@ -1468,6 +1469,8 @@ class Project(object):
       branch.remote.Save()
 
     cmd = ['push']
+    if dryrun:
+      cmd.append('-n')
 
     url = branch.remote.pushUrl
     if url is None:
@@ -1485,7 +1488,7 @@ class Project(object):
     if GitCommand(self, cmd, bare=True).Wait() != 0:
       raise UploadError('Upload failed')
 
-    msg = "pushed to %s for %s" % (branch.remote.review, dest_branch)
+    msg = "pushed to %s for %s" % (url, dest_branch)
     self.bare_git.UpdateRef(R_PUB + branch.name,
                             R_HEADS + branch.name,
                             message=msg)
